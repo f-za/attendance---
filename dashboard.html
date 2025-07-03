@@ -133,6 +133,20 @@
             background: #d3166a;
         }
         
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+        
+        .btn-warning {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        
+        .btn-warning:hover {
+            background-color: #e0a800;
+        }
+        
         .card {
             background: white;
             border-radius: 10px;
@@ -285,7 +299,12 @@
             color: var(--danger);
         }
         
-        /* زر تسجيل الحضور الدائري */
+        .action-btns {
+            display: flex;
+            gap: 5px;
+            justify-content: center;
+        }
+        
         .attendance-btn {
             position: fixed;
             bottom: 30px;
@@ -418,7 +437,7 @@
                     <i class="fas fa-calendar-check"></i>
                 </div>
                 <div class="stat-info">
-                    <h3 id="today-attendance">18</h3>
+                    <h3 id="today-attendance">0</h3>
                     <p>حضور اليوم</p>
                 </div>
             </div>
@@ -427,7 +446,7 @@
                     <i class="fas fa-user-times"></i>
                 </div>
                 <div class="stat-info">
-                    <h3 id="absent-today">7</h3>
+                    <h3 id="absent-today">0</h3>
                     <p>غياب اليوم</p>
                 </div>
             </div>
@@ -451,30 +470,11 @@
                             <th>التاريخ والوقت</th>
                             <th>الموقع</th>
                             <th>الحالة</th>
+                            <th>إجراءات</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr>
-                            <td><img src="https://randomuser.me/api/portraits/men/1.jpg" class="user-avatar" alt="صورة الموظف"></td>
-                            <td>أحمد محمد</td>
-                            <td>٣/٧/٢٠٢٥، ١٠:١٥ ص</td>
-                            <td><a href="https://www.google.com/maps?q=26.435672264392906,50.08729113942701" target="_blank" class="map-link">عرض الموقع</a></td>
-                            <td><span class="badge badge-success">اليوم</span></td>
-                        </tr>
-                        <tr>
-                            <td><img src="https://randomuser.me/api/portraits/women/1.jpg" class="user-avatar" alt="صورة الموظف"></td>
-                            <td>سارة عبدالله</td>
-                            <td>٣/٧/٢٠٢٥، ٠٩:٣٠ ص</td>
-                            <td><a href="https://www.google.com/maps?q=26.435672264392906,50.08729113942701" target="_blank" class="map-link">عرض الموقع</a></td>
-                            <td><span class="badge badge-success">اليوم</span></td>
-                        </tr>
-                        <tr>
-                            <td><img src="https://randomuser.me/api/portraits/men/2.jpg" class="user-avatar" alt="صورة الموظف"></td>
-                            <td>خالد علي</td>
-                            <td>٢/٧/٢٠٢٥، ٠٨:٤٥ ص</td>
-                            <td><a href="https://www.google.com/maps?q=26.435672264392906,50.08729113942701" target="_blank" class="map-link">عرض الموقع</a></td>
-                            <td><span class="badge">سابق</span></td>
-                        </tr>
+                        <!-- سيتم ملؤه ديناميكيًا -->
                     </tbody>
                 </table>
             </div>
@@ -490,6 +490,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
     <script src="firebase-config.js"></script>
 
     <script>
@@ -497,6 +498,7 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
+        const storage = firebase.storage();
 
         // DOM elements
         const logoutBtn = document.getElementById('logout');
@@ -527,6 +529,18 @@
         function loadAttendance() {
             db.collection("attendance").orderBy("timestamp", "desc").onSnapshot(snapshot => {
                 tableBody.innerHTML = '';
+                
+                if (snapshot.empty) {
+                    tableBody.innerHTML = `
+                        <tr>
+                            <td colspan="6" style="text-align:center;">
+                                لا توجد سجلات حضور حتى الآن
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+
                 snapshot.forEach(doc => {
                     const data = doc.data();
                     const date = data.timestamp ? new Date(data.timestamp.toDate()).toLocaleString('ar-EG') : 'غير معروف';
@@ -547,34 +561,69 @@
                         <td>${date}</td>
                         <td><a href="${mapLink}" target="_blank" class="map-link">عرض الموقع</a></td>
                         <td><span class="badge ${isToday ? 'badge-success' : ''}">${isToday ? 'اليوم' : 'سابق'}</span></td>
+                        <td class="action-btns">
+                            <button onclick="deleteAttendanceRecord('${doc.id}', '${data.photo}')" 
+                                    class="btn btn-danger btn-sm">
+                                <i class="fas fa-trash"></i> حذف
+                            </button>
+                        </td>
                     `;
 
                     tableBody.appendChild(tr);
                 });
+                
+                // Update stats after loading data
+                updateStats(snapshot);
             });
+        }
+
+        // Delete attendance record
+        async function deleteAttendanceRecord(docId, photoUrl) {
+            if (!confirm('هل أنت متأكد من حذف سجل الحضور هذا؟ سيتم حذف الصورة أيضًا بشكل نهائي.')) {
+                return;
+            }
+
+            try {
+                // Delete image from storage if it's from Firebase Storage
+                if (photoUrl.includes('firebasestorage.googleapis.com')) {
+                    const storageRef = storage.refFromURL(photoUrl);
+                    await storageRef.delete();
+                }
+                
+                // Delete document from Firestore
+                await db.collection("attendance").doc(docId).delete();
+                
+                alert('تم حذف سجل الحضور بنجاح');
+            } catch (error) {
+                console.error("Error deleting record:", error);
+                alert('حدث خطأ أثناء حذف سجل الحضور');
+            }
         }
 
         // Load statistics
         function loadStats() {
-            // In a real app, you would query your employees collection
-            // For demo purposes, we'll use random numbers
+            // For demo - in real app you would have employees collection
             db.collection("attendance").get().then(snapshot => {
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                
-                let todayCount = 0;
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    const timestamp = data.timestamp?.toDate();
-                    if (timestamp && timestamp >= today) {
-                        todayCount++;
-                    }
-                });
-                
                 totalEmployeesEl.textContent = snapshot.size > 0 ? Math.floor(snapshot.size * 1.5) : 15;
-                todayAttendanceEl.textContent = todayCount;
-                absentTodayEl.textContent = parseInt(totalEmployeesEl.textContent) - todayCount;
             });
+        }
+
+        // Update statistics
+        function updateStats(snapshot) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            
+            let todayCount = 0;
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                const timestamp = data.timestamp?.toDate();
+                if (timestamp && timestamp >= today) {
+                    todayCount++;
+                }
+            });
+            
+            todayAttendanceEl.textContent = todayCount;
+            absentTodayEl.textContent = parseInt(totalEmployeesEl.textContent) - todayCount;
         }
 
         // Filter table
